@@ -7,6 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#1a0c0a">
 <title>Klasik Motor — Tepe Yarışı</title>
+<!-- yz-suruyor-izle-v1 -->
 <style>
   :root {
     --bg: #140a08;
@@ -134,6 +135,65 @@
     .pad { width: 86px; height: 86px; }
     .pad.jump { width: 100px; height: 100px; }
   }
+
+  #modeBadge {
+    pointer-events: none;
+    position: absolute;
+    top: 52px;
+    left: 14px;
+    z-index: 2;
+  }
+  #modeBadge .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #c4161ccc;
+    border: 1px solid #ffd8d488;
+    color: #fff;
+    font-weight: 800;
+    font-size: clamp(11px, 2.2vw, 14px);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 6px 12px;
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 4px 16px #0006;
+    text-shadow: 0 1px 4px #0008;
+  }
+  #modeBadge .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #7dff9a;
+    box-shadow: 0 0 8px #7dff9a;
+    animation: blink 1s steps(2) infinite;
+    flex-shrink: 0;
+  }
+  #tools {
+    position: absolute;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    display: flex;
+    gap: 8px;
+    z-index: 3;
+    pointer-events: auto;
+  }
+  .tool {
+    pointer-events: auto;
+    touch-action: manipulation;
+    border: 2px solid #fff4;
+    background: #1a0c0acc;
+    color: #fff;
+    font-weight: 800;
+    font-size: 12px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 10px 14px;
+    border-radius: 12px;
+    backdrop-filter: blur(6px);
+    cursor: pointer;
+    box-shadow: 0 6px 16px #0005;
+  }
+  .tool:active { transform: scale(.96); background: #c4161ccc; }
+  #controls { display: none !important; }
 </style>
 </head>
 <body>
@@ -143,6 +203,7 @@
     <div id="hud">
       <div id="titleMini"><span>Klasik</span> Motor</div>
       <div style="display:flex;gap:16px;align-items:flex-start;">
+        <div class="stat"><small>Mesafe</small><b id="mesafe">0 m</b></div>
         <div class="stat"><small>Skor</small><b id="skor">0</b></div>
         <div class="stat"><small>En İyi</small><b id="eniyi">0</b></div>
         <div id="fuelWrap">
@@ -151,12 +212,17 @@
         </div>
       </div>
     </div>
-    <div id="overlay">
+    <div id="overlay" class="hidden">
       <div class="sub">Tepe Yarışı</div>
       <h1>KLASİK <em>MOTOR</em></h1>
-      <p>Kırmızı klasik motorunla tepelerde gazla, fren yap ve kayaların üzerinden zıpla. Yakıt bidonlarını topla, rekorunu kır.</p>
-      <p class="hint">Masaüstü: sağ ok gaz · sol ok fren · boşluk zıpla<br>Telefon: alttaki düğmeler</p>
-      <button class="cta" id="startBtn" type="button">Başla</button>
+      <p>Yapay zekâ sürüyor — sen izle.</p>
+    </div>
+    <div id="modeBadge">
+      <div class="pill"><span class="dot"></span>Yapay Zekâ Sürüyor — İzle</div>
+    </div>
+    <div id="tools">
+      <button class="tool" id="btnSpeed" type="button">Hız 1×</button>
+      <button class="tool" id="btnRestart" type="button">Yeniden</button>
     </div>
     <div id="controls">
       <div class="cluster">
@@ -176,15 +242,26 @@
   const canvas = document.getElementById("c");
   const ctx = canvas.getContext("2d");
   const overlay = document.getElementById("overlay");
-  const startBtn = document.getElementById("startBtn");
   const skorEl = document.getElementById("skor");
   const eniyiEl = document.getElementById("eniyi");
+  const mesafeEl = document.getElementById("mesafe");
   const fuelFill = document.getElementById("fuelFill");
   const fuelWrap = document.getElementById("fuelWrap");
+  const btnSpeed = document.getElementById("btnSpeed");
+  const btnRestart = document.getElementById("btnRestart");
 
-  const input = { gas: false, brake: false, jump: false, jumpQueued: false };
+  const input = { gas: false, brake: false, jump: false, jumpQueued: false, lean: 0 };
   let best = Number(localStorage.getItem(STORAGE_KEY) || 0) || 0;
   eniyiEl.textContent = String(best);
+
+  const FINISH_AT = 160 + 10000; // 1000 m
+  let timeScale = 1;
+  let runCount = 0;
+  let crashCount = 0;
+  let finishCount = 0;
+  let longestX = 0;
+  let pendingRestart = null;
+  const AI_VERSION = "yz-suruyor-izle-v1";
 
   const state = {
     mode: "menu", // menu | play | dead
@@ -246,7 +323,7 @@
       crashT: 0,
     };
     state.camX = 0;
-    state.items = spawnItems(0, 8000);
+    state.items = spawnItems(0, 8000, []);
     state.particles = [];
     state.floaters = [];
     state.shake = 0;
@@ -256,7 +333,76 @@
     updateHud(0, 100);
   }
 
-  function spawnItems(fromX, toX) {
+  function trajectoryClears(from, targets, clearance) {
+    if (!targets.length || from.vx < 90) return false;
+    const dt = 1 / 60;
+    const margin = clearance == null ? 6 : clearance;
+    let vx = from.vx;
+    let x = from.x;
+    const slope0 = groundSlope(x);
+    vx += -Math.sin(slope0) * 320 * dt;
+    vx *= Math.pow(0.55, dt);
+    vx = Math.max(0, Math.min(620, vx));
+    x += vx * dt;
+    const jumpV = 420 + Math.min(80, vx * 0.15);
+    let y = groundY(x);
+    let vy = -jumpV;
+    for (let i = 0; i < 90; i++) {
+      vy += 1300 * dt;
+      y += vy * dt;
+      vx *= Math.pow(0.85, dt);
+      x += vx * dt;
+      for (const it of targets) {
+        const height = it.type === "crate" ? it.r * 1.7 : it.r * 1.35;
+        const obstTop = groundY(it.x) - height;
+        const half = it.r + 18;
+        if (Math.abs(x - it.x) < half && (y - 6) > obstTop - margin) return false;
+      }
+      if (y >= groundY(x) && i > 3) {
+        const last = targets[targets.length - 1];
+        if (x < last.x + last.r + 18) return false;
+        if (vy > 1100) return false;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function obstacleClearedByJump(ox, kind, jumpX, vx) {
+    const r = kind === "crate" ? 26 : 22;
+    const it = { type: kind, x: ox, r };
+    return trajectoryClears({ x: jumpX, vx }, [it], 6);
+  }
+
+  function obstacleJumpScore(ox, kind) {
+    let n = 0;
+    for (const back of [70, 90, 110, 130, 150]) {
+      for (const vx of [240, 280, 330, 380]) {
+        if (obstacleClearedByJump(ox, kind, ox - back, vx)) n++;
+      }
+    }
+    return n;
+  }
+
+  function placeObstacle(kind, preferredX, existingXs) {
+    const minGap = 320;
+    const okGap = (x) => existingXs.every((e) => Math.abs(e - x) >= minGap);
+    let bestX = 0, best = -1;
+    for (let off = 0; off <= 300; off += 20) {
+      const dirs = off === 0 ? [0] : [off, -off];
+      for (const d of dirs) {
+        const x = preferredX + d;
+        if (!okGap(x)) continue;
+        const s = obstacleJumpScore(x, kind);
+        if (s > best) { best = s; bestX = x; }
+        if (d === 0 && s >= 4) return x;
+      }
+    }
+    return best >= 3 ? bestX : 0;
+  }
+
+  function spawnItems(fromX, toX, existingXs) {
+    const obstXs = (existingXs || []).slice();
     const items = [];
     const start = 520;
     const step = 380;
@@ -267,11 +413,14 @@
       const h1 = hash(i + 1);
       const h2 = hash(i + 99);
       const h3 = hash(i + 17);
-      // first rock after ~1100 so the player can learn gaz/zıpla
+      // first rock after ~1100; skip or nudge placements that cannot be jumped
       if (baseX > 1050 && h1 > 0.36) {
         const kind = h3 > 0.7 ? "crate" : "rock";
-        const x = baseX + h1 * 80;
-        items.push({ type: kind, x, r: kind === "crate" ? 26 : 22, taken: false });
+        const x = placeObstacle(kind, baseX + h1 * 80, obstXs);
+        if (x) {
+          items.push({ type: kind, x, r: kind === "crate" ? 26 : 22, taken: false });
+          obstXs.push(x);
+        }
       }
       // fuel appears earlier so players learn to collect
       if (h2 > 0.40 || i === 0) {
@@ -286,7 +435,8 @@
     const bike = state.bike;
     const maxX = state.items.reduce((m, it) => Math.max(m, it.x), 0);
     if (bike.x + 4000 > maxX) {
-      const more = spawnItems(maxX + 40, maxX + 6000);
+      const obstXs = state.items.filter((it) => it.type !== "fuel").map((it) => it.x);
+      const more = spawnItems(maxX + 40, maxX + 6000, obstXs);
       state.items.push(...more);
       // prune far behind
       state.items = state.items.filter((it) => it.x > bike.x - 800);
@@ -298,8 +448,14 @@
     return Math.floor(dist / 8) + state.collected * 100;
   }
 
+  function metersOf() {
+    if (!state.bike) return 0;
+    return Math.floor(Math.max(0, state.bike.x - 160) / 10);
+  }
+
   function updateHud(score, fuel) {
     skorEl.textContent = String(score);
+    if (mesafeEl) mesafeEl.textContent = metersOf() + " m";
     fuelFill.style.width = Math.max(0, Math.min(100, fuel)) + "%";
     fuelWrap.classList.toggle("low", fuel < 22 && fuel > 0);
   }
@@ -350,36 +506,231 @@
   }
   initClouds();
 
+  function clearPendingRestart() {
+    if (pendingRestart) {
+      clearTimeout(pendingRestart);
+      pendingRestart = null;
+    }
+  }
+
+  function scheduleRestart(delayMs) {
+    clearPendingRestart();
+    pendingRestart = setTimeout(() => {
+      pendingRestart = null;
+      startPlay();
+    }, delayMs);
+  }
+
   function startPlay() {
+    clearPendingRestart();
     resetGame();
+    runCount++;
+    input.gas = input.brake = input.jump = input.jumpQueued = false;
+    input.lean = 0;
     state.mode = "play";
     overlay.classList.add("hidden");
     state.lastTs = 0;
     resumeAudio();
   }
 
-  function gameOver(reason) {
+  function endRun(reason) {
     if (state.mode !== "play") return;
     state.mode = "dead";
     state.reason = reason;
     const sc = scoreOf();
+    const metres = metersOf();
+    if (state.bike) longestX = Math.max(longestX, state.bike.x);
     updateHud(sc, state.bike.fuel);
     if (sc > best) {
       best = sc;
       localStorage.setItem(STORAGE_KEY, String(best));
       eniyiEl.textContent = String(best);
     }
-    const title = reason === "fuel" ? "Yakıt bitti!" : "Çarptın!";
+    let title, sub;
+    if (reason === "finish") {
+      finishCount++;
+      title = "Tur tamamlandı!";
+      sub = "Yapay Zekâ Sürüyor — İzle";
+    } else if (reason === "fuel") {
+      title = "Yakıt bitti!";
+      sub = "Oyun Bitti";
+    } else {
+      crashCount++;
+      title = "Çarptın!";
+      sub = "Oyun Bitti";
+    }
     overlay.innerHTML = `
-      <div class="sub">Oyun Bitti</div>
+      <div class="sub">${sub}</div>
       <h1>${title}</h1>
-      <div class="scoreline">Skor: <strong>${sc}</strong> &nbsp;·&nbsp; En iyi: <strong>${best}</strong></div>
-      <p class="hint">Boşluk veya düğmeye basarak tekrar dene</p>
-      <button class="cta" id="againBtn" type="button">Tekrar Oyna</button>
+      <div class="scoreline">Skor: <strong>${sc}</strong> &nbsp;·&nbsp; Mesafe: <strong>${metres} m</strong></div>
+      <div class="scoreline" style="font-size:16px;opacity:.9">En iyi: <strong>${best}</strong></div>
+      <p class="hint">Yeni tur birkaç saniye içinde başlıyor…</p>
+      <button class="cta" id="againBtn" type="button">Hemen Başlat</button>
     `;
     overlay.classList.remove("hidden");
-    document.getElementById("againBtn").addEventListener("click", startPlay);
-    state.shake = 10;
+    const again = document.getElementById("againBtn");
+    if (again) again.addEventListener("click", startPlay);
+    state.shake = reason === "finish" ? 4 : 10;
+    scheduleRestart(2200);
+  }
+
+  function gameOver(reason) {
+    endRun(reason);
+  }
+
+  function finishRun() {
+    setEngine(0, false);
+    endRun("finish");
+  }
+
+  function nearestItems(b) {
+    let obst = null, fuel = null, obst2 = null;
+    for (const it of state.items) {
+      if (it.taken) continue;
+      const dx = it.x - b.x;
+      if (dx < -30) continue;
+      if (it.type === "fuel") {
+        if (!fuel || it.x < fuel.x) fuel = it;
+      } else if (!obst || it.x < obst.x) {
+        obst2 = obst;
+        obst = it;
+      } else if (!obst2 || it.x < obst2.x) {
+        obst2 = it;
+      }
+    }
+    return { obst, obst2, fuel };
+  }
+
+  // Look-ahead rider: gaz/fren/zıpla plus mid-air lean to land upright.
+  function aiControl(dt) {
+    const b = state.bike;
+    input.gas = false;
+    input.brake = false;
+    input.jump = false;
+    input.lean = 0;
+    if (!b || !b.alive || state.mode !== "play") return;
+
+    const slope = groundSlope(b.x);
+    const look = 60 + Math.min(320, Math.max(0, b.vx) * 0.75);
+    let maxDrop = 0, maxRise = 0, minSlopeA = 0, maxSlopeA = 0;
+    for (let d = 16; d <= look; d += 16) {
+      const s = groundSlope(b.x + d);
+      if (s < minSlopeA) minSlopeA = s;
+      if (s > maxSlopeA) maxSlopeA = s;
+      const drop = groundY(b.x + d) - groundY(b.x);
+      if (drop > maxDrop) maxDrop = drop;
+      if (-drop > maxRise) maxRise = -drop;
+    }
+
+    const { obst, obst2, fuel } = nearestItems(b);
+
+    let want = 230;
+    if (slope > 0.18 || maxRise > 36) want = 300;
+    if (slope > 0.35 || maxRise > 70) want = 350;
+    if (slope < -0.28) want = 200;
+    if (minSlopeA < -0.42) want = Math.min(want, 200);
+    if (b.fuel < 28 && !(obst && obst.x - b.x < 360)) want = Math.min(want, 210);
+    if (b.fuel < 16 && !(obst && obst.x - b.x < 360)) want = Math.min(want, 180);
+
+    if (b.fuel > 0) {
+      if (b.vx < want - 6) input.gas = true;
+      else if (b.vx > want + 32) input.brake = true;
+      if (b.fuel < 18 && b.vx > 150 && !(obst && obst.x - b.x < 200)) {
+        input.gas = false;
+      }
+    }
+
+    function jumpWouldClear(from, obstA, obstB) {
+      if (!obstA) return false;
+      const targets = obstB && obstB.x - obstA.x < from.vx * 0.55 + 90 ? [obstA, obstB] : [obstA];
+      return trajectoryClears(from, targets, 6);
+    }
+
+    function coast(from, seconds, gassing) {
+      let x = from.x, vx = from.vx;
+      const dt = 1 / 60;
+      for (let t = 0; t < seconds; t += dt) {
+        const slope = groundSlope(x);
+        if (gassing) vx += 420 * dt;
+        vx += -Math.sin(slope) * 320 * dt;
+        vx *= Math.pow(0.55, dt);
+        vx = Math.max(0, Math.min(620, vx));
+        x += vx * dt;
+      }
+      return { x, y: groundY(x), vx };
+    }
+
+    if (state.aiObstX !== (obst && obst.x)) {
+      state.aiObstX = obst ? obst.x : 0;
+      state.aiTargetVx = null;
+    }
+
+    if (b.onGround && obst) {
+      const d = obst.x - b.x;
+      if (d < 480 && d > 14) {
+        const now = jumpWouldClear(b, obst, obst2);
+        const laterGas = jumpWouldClear(coast(b, 0.08, true), obst, obst2);
+        const laterCoast = jumpWouldClear(coast(b, 0.08, false), obst, obst2);
+        const later = laterGas || laterCoast;
+
+        let goodVx = null, goodDiff = 1e9;
+        for (let vx = 220; vx <= 400; vx += 20) {
+          if (jumpWouldClear({ x: b.x, y: groundY(b.x), vx }, obst, obst2)) {
+            const diff = Math.abs(vx - 300);
+            if (diff < goodDiff) { goodDiff = diff; goodVx = vx; }
+          }
+        }
+        if (goodVx == null) {
+          for (let look = 0.06; look <= 0.45 && goodVx == null; look += 0.06) {
+            for (const gassing of [false, true]) {
+              const st = coast(b, look, gassing);
+              if (st.x >= obst.x - 24) continue;
+              if (jumpWouldClear(st, obst, obst2)) {
+                goodVx = st.vx;
+                break;
+              }
+            }
+          }
+        }
+        if (goodVx != null) state.aiTargetVx = goodVx;
+        const targetVx = goodVx != null ? goodVx : state.aiTargetVx;
+        if (targetVx != null) {
+          want = targetVx;
+          if (b.vx < want - 6) { input.gas = true; input.brake = false; }
+          else if (b.vx > want + 22) { input.brake = true; input.gas = false; }
+        } else if (d < 200) {
+          want = Math.max(want, 300);
+          if (b.vx < want - 6) { input.gas = true; input.brake = false; }
+        }
+
+        let shouldJump = now && (!later || d <= 120);
+        if (shouldJump && fuel && fuel.x > b.x + 14 && fuel.x < obst.x - 24) {
+          const after = { x: fuel.x + 12, y: groundY(fuel.x + 12), vx: Math.max(b.vx, targetVx || b.vx) };
+          if (after.x < obst.x - 20 && jumpWouldClear(after, obst, obst2)) {
+            shouldJump = false;
+          }
+        }
+        if (shouldJump) {
+          input.jumpQueued = true;
+        }
+      }
+    }
+
+    if (!b.onGround) {
+      input.gas = false;
+      input.brake = false;
+      let x = b.x, y = b.y, vy = b.vy;
+      const step = 1 / 30;
+      for (let i = 0; i < 50; i++) {
+        vy += 1300 * step;
+        y += vy * step;
+        x += b.vx * step;
+        if (y >= groundY(x)) break;
+      }
+      const landSlope = groundSlope(x);
+      const err = landSlope - b.angle;
+      input.lean = Math.max(-1, Math.min(1, err * 1.8));
+    }
   }
 
   function update(dt) {
@@ -424,8 +775,10 @@
     }
     if (state.mode !== "play") return;
 
+    aiControl(dt);
+
     // Fuel
-    const drain = 3.2 + (input.gas ? 5.5 : 0) + b.vx * 0.04;
+    const drain = 2.4 + (input.gas ? 4.2 : 0) + b.vx * 0.032;
     b.fuel = Math.max(0, b.fuel - drain * dt);
 
     // Horizontal physics
@@ -465,8 +818,10 @@
       input.jumpQueued = false;
       b.vy += 1300 * dt;
       b.y += b.vy * dt;
-      b.angle += b.av * dt;
       b.av += (slope * 0.4 - b.angle) * 1.1 * dt;
+      if (input.lean) b.av += input.lean * 10 * dt;
+      b.av = Math.max(-7, Math.min(7, b.av));
+      b.angle += b.av * dt;
       const gy = groundY(b.x);
       if (b.y >= gy) {
         b.y = gy;
@@ -501,7 +856,7 @@
       if (it.type === "fuel") {
         if (dist < reach) {
           it.taken = true;
-          b.fuel = Math.min(100, b.fuel + 28);
+          b.fuel = Math.min(100, b.fuel + 34);
           state.collected++;
           floater(it.x, iy - 10, "+100");
           burst(it.x, iy, "#f0c14a", 14, 140, 0.5);
@@ -518,11 +873,17 @@
       }
     }
 
+    if (b.x >= FINISH_AT) {
+      finishRun();
+      return;
+    }
+
     if (b.fuel <= 0 && b.vx < 8 && b.onGround) {
       gameOver("fuel");
       return;
     }
 
+    longestX = Math.max(longestX, b.x);
     updateHud(scoreOf(), b.fuel);
     setEngine(b.vx, input.gas && b.fuel > 0);
   }
@@ -1158,75 +1519,68 @@
   // ----- loop -----
   function frame(ts) {
     if (!state.lastTs) state.lastTs = ts;
-    let dt = (ts - state.lastTs) / 1000;
+    let raw = (ts - state.lastTs) / 1000;
     state.lastTs = ts;
-    dt = Math.min(0.033, dt);
-    update(dt);
+    raw = Math.min(0.05, raw) * timeScale;
+    while (raw > 0) {
+      const step = Math.min(0.033, raw);
+      update(step);
+      raw -= step;
+    }
     render();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
-  // draw a parked bike on the menu
-  resetGame();
-  state.mode = "menu";
-  state.bike.x = 420;
-  state.camX = 80;
-  state.bike.y = groundY(state.bike.x);
 
-  // ----- input -----
-  function bindPad(el, key, isJump) {
-    const down = (e) => {
-      e.preventDefault();
-      el.classList.add("held");
-      input[key] = true;
-      if (isJump) input.jumpQueued = true;
-      if (state.mode === "menu" || state.mode === "dead") startPlay();
-      try { el.setPointerCapture(e.pointerId); } catch (_) {}
-    };
-    const up = (e) => {
-      e.preventDefault();
-      el.classList.remove("held");
-      input[key] = false;
-    };
-    el.addEventListener("pointerdown", down);
-    el.addEventListener("pointerup", up);
-    el.addEventListener("pointercancel", up);
-    el.addEventListener("pointerout", up);
-    el.addEventListener("contextmenu", (e) => e.preventDefault());
+  // Spectator-only: no driving input. R restarts, 1/2/4 changes speed.
+  function applyTimeScale(s) {
+    timeScale = s;
+    if (btnSpeed) btnSpeed.textContent = "Hız " + s + "×";
   }
-  bindPad(document.getElementById("btnGas"), "gas", false);
-  bindPad(document.getElementById("btnBrake"), "brake", false);
-  bindPad(document.getElementById("btnJump"), "jump", true);
-
-  function keyMap(code, down) {
-    if (code === "ArrowRight" || code === "KeyD") input.gas = down;
-    else if (code === "ArrowLeft" || code === "KeyA") input.brake = down;
-    else if (code === "Space" || code === "ArrowUp" || code === "KeyW") {
-      input.jump = down;
-      if (down) input.jumpQueued = true;
-    }
+  if (btnSpeed) {
+    btnSpeed.addEventListener("click", () => {
+      applyTimeScale(timeScale === 1 ? 2 : timeScale === 2 ? 4 : 1);
+    });
   }
+  if (btnRestart) btnRestart.addEventListener("click", startPlay);
   window.addEventListener("keydown", (e) => {
-    if (["ArrowRight","ArrowLeft","ArrowUp","Space","KeyW","KeyA","KeyD"].includes(e.code)) {
-      e.preventDefault();
-    }
     if (e.repeat) return;
-    if ((e.code === "Space" || e.code === "Enter") && (state.mode === "menu" || state.mode === "dead")) {
+    if (e.code === "KeyR" || ((e.code === "Space" || e.code === "Enter") && state.mode === "dead")) {
+      e.preventDefault();
       startPlay();
-      return;
-    }
-    keyMap(e.code, true);
+    } else if (e.code === "Digit1") applyTimeScale(1);
+    else if (e.code === "Digit2") applyTimeScale(2);
+    else if (e.code === "Digit4") applyTimeScale(4);
   });
-  window.addEventListener("keyup", (e) => keyMap(e.code, false));
-  window.addEventListener("blur", () => { input.gas = input.brake = input.jump = false; });
 
-  startBtn.addEventListener("click", startPlay);
-
-  if (/[?&]smoke=1/.test(location.search)) {
-    startPlay();
-    input.gas = true;
-    window.__SMOKE__ = true;
-  }
+  window.__KLASIK_MOTOR_AI__ = AI_VERSION;
+  window.__GAME__ = {
+    setTimeScale: applyTimeScale,
+    snapshot() {
+      const b = state.bike;
+      return {
+        version: AI_VERSION,
+        mode: state.mode,
+        reason: state.reason,
+        x: b ? b.x : 0,
+        vx: b ? b.vx : 0,
+        fuel: b ? b.fuel : 0,
+        angle: b ? b.angle : 0,
+        onGround: b ? b.onGround : false,
+        score: b ? scoreOf() : 0,
+        distance: b ? Math.max(0, b.x - 160) : 0,
+        meters: metersOf(),
+        time: state.time,
+        runCount,
+        crashCount,
+        finishCount,
+        longestX,
+        timeScale,
+        gas: input.gas,
+        brake: input.brake,
+      };
+    }
+  };
 
   window.addEventListener("error", (e) => {
     window.__GAME_ERRORS__ = (window.__GAME_ERRORS__ || []).concat([String(e.message || e.error)]);
@@ -1237,6 +1591,9 @@
 
   // prevent page scroll / bounce
   document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+  // Auto-start in İzle mode
+  startPlay();
 })();
 </script>
 </body>

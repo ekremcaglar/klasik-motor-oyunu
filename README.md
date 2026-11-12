@@ -1,7 +1,7 @@
 # Klasik Motor — Tepe Yarışı
 
-Kırmızı klasik motosikletle tepelerde gazla, fren yap ve engellerin üzerinden zıpla. Yakıt bidonlarını topla, mesafeni uzat, rekorunu kır.
+Yapay zekânın kırmızı klasik motosikletle tepelerde sürdüğü bir izleme oyunu. Sen sadece izle: gaz, fren ve zıplamayı yapay zekâ yönetir; yakıt bidonlarını toplar, kayaların üzerinden atlar ve turu tamamlamaya çalışır.
 
-**Oynanış:** Sağ ok / Gaz ile hızlan, sol ok / Fren ile yavaşla, boşluk / Zıpla ile kayaların üzerinden atla. Yakıt bitmeden bidon topla. En iyi skor tarayıcıda saklanır.
+**Mod:** Yapay Zekâ Sürüyor — İzle. Oyun açılınca kendiliğinden başlar, çarpınca veya tur bitince kısa bir süre sonra yeniden başlar. İzleyici olarak sağ alttan hızı değiştirebilir (1× / 2× / 4×) veya turu yeniden başlatabilirsin. En iyi skor tarayıcıda saklanır.
 
 Canlı: https://ekremcaglar.github.io/klasik-motor-oyunu/
